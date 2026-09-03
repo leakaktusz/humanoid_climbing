@@ -1,0 +1,416 @@
+<mujoco model="humanoid_fingers">
+<!-- Gymnasium Humanoid-v4 with articulated hands.
+
+     Everything above the wrist is byte-identical to humanoid.xml (same bodies,
+     joints, geoms, gears, tendons, and — critically — the same FIRST 17 actuators
+     in the same order, so a 17-dim checkpoint from the plain humanoid maps onto
+     ctrl[:17] unchanged). The only change: each `*_hand` sphere is replaced by a
+     wrist + palm + four fingers + an opposable thumb.
+
+     Actuation (23 total = 17 original + 3 per hand):
+       17..19  right_wrist, right_grip, right_thumb
+       20..22  left_wrist,  left_grip,  left_thumb
+     The eight finger joints of a hand are driven by ONE `*_grip` motor through a
+     fixed tendon, and the three thumb joints by one `*_thumb` motor. The joints
+     are still individually simulated (so the hand conforms to a hold) but the
+     policy only sees one "close the hand" DOF per hand — 23 actions instead of
+     the 39 a fully independent hand would need. To drive fingers independently,
+     delete the tendons and give each finger joint its own <motor>.
+
+     Collision filtering: finger geoms use contype=2 conaffinity=5, which makes
+     finger-vs-finger pairs impossible ((2&5)=0 both ways) while still colliding
+     with anything on contype bit 1 (floor, wall) or bit 4. This keeps the MJX
+     contact count from exploding — 22 extra geoms per robot would otherwise
+     generate a large sibling-contact matrix.
+
+     Finger joints deliberately override the file-level `armature="1" damping="1"`
+     default: armature 1 on a 10-gram phalanx is an enormous reflected inertia and
+     would make the fingers effectively rigid.
+-->
+
+    <compiler angle="degree" inertiafromgeom="true"/>
+    <default>
+        <joint armature="1" damping="1" limited="true"/>
+        <geom conaffinity="1" condim="1" contype="1" margin="0.001" material="geom" rgba="0.8 0.6 .4 1"/>
+        <motor ctrllimited="true" ctrlrange="-.4 .4"/>
+        <!-- Phalanx defaults: light, lightly damped, springy back toward open, and
+             FRICTIONAL (condim 3) — the whole point of having fingers.
+             contype=2 conaffinity=5: finger-vs-finger is impossible ((2&5)=0 both
+             ways) so the four fingers never generate contacts against each other,
+             but they still hit the floor/wall (contype bit 1). -->
+        <default class="finger">
+            <joint type="hinge" armature="0.0008" damping="0.04" stiffness="0.6" limited="true"/>
+            <geom type="capsule" size="0.008" condim="3" friction="1.5 0.05 0.0001"
+                  contype="2" conaffinity="5" rgba="0.85 0.65 0.45 1"/>
+        </default>
+        <!-- The thumb needs REAL contact against the fingers, otherwise it closes
+             straight through them (they'd be mutually invisible under the finger
+             class). contype=4 conaffinity=3 gives:
+               thumb vs finger  (4&5)=4 and (2&3)=2  -> collide  [the pinch]
+               thumb vs thumb   (4&3)=0 both ways    -> no self-contact
+               thumb vs world   (1&3)=1              -> collide
+             Physics then stops the thumb at first touch, so the pinch can't
+             interpenetrate no matter how the tendon is driven. -->
+        <default class="thumb">
+            <joint type="hinge" armature="0.0008" damping="0.04" stiffness="0.6" limited="true"/>
+            <geom type="capsule" size="0.008" condim="3" friction="1.5 0.05 0.0001"
+                  contype="4" conaffinity="3" rgba="0.85 0.65 0.45 1"/>
+        </default>
+    </default>
+    <option integrator="RK4" iterations="50" solver="Newton" timestep="0.003"/>
+    <size nkey="5" nuser_geom="1"/>
+    <visual>
+        <map fogend="5" fogstart="3"/>
+    </visual>
+    <asset>
+        <texture builtin="gradient" height="100" rgb1=".4 .5 .6" rgb2="0 0 0" type="skybox" width="100"/>
+        <texture builtin="flat" height="1278" mark="cross" markrgb="1 1 1" name="texgeom" random="0.01" rgb1="0.8 0.6 0.4" rgb2="0.8 0.6 0.4" type="cube" width="127"/>
+        <texture builtin="checker" height="100" name="texplane" rgb1="0 0 0" rgb2="0.8 0.8 0.8" type="2d" width="100"/>
+        <material name="MatPlane" reflectance="0.5" shininess="1" specular="1" texrepeat="60 60" texture="texplane"/>
+        <material name="geom" texture="texgeom" texuniform="true"/>
+    </asset>
+    <worldbody>
+        <light cutoff="100" diffuse="1 1 1" dir="-0 0 -1.3" directional="true" exponent="1" pos="0 0 1.3" specular=".1 .1 .1"/>
+        <geom condim="3" friction="1 .1 .1" material="MatPlane" name="floor" pos="0 0 0" rgba="0.8 0.9 0.8 1" size="20 20 0.125" type="plane"/>
+        <body name="torso" pos="0 0 1.4">
+            <camera name="track" mode="trackcom" pos="0 -4 0" xyaxes="1 0 0 0 0 1"/>
+            <joint armature="0" damping="0" limited="false" name="root" pos="0 0 0" stiffness="0" type="free"/>
+            <geom fromto="0 -.07 0 0 .07 0" name="torso1" size="0.07" type="capsule"/>
+            <geom name="head" pos="0 0 .19" size=".09" type="sphere" user="258"/>
+            <geom fromto="-.01 -.06 -.12 -.01 .06 -.12" name="uwaist" size="0.06" type="capsule"/>
+            <body name="lwaist" pos="-.01 0 -0.260" quat="1.000 0 -0.002 0">
+                <geom fromto="0 -.06 0 0 .06 0" name="lwaist" size="0.06" type="capsule"/>
+                <joint armature="0.02" axis="0 0 1" damping="5" name="abdomen_z" pos="0 0 0.065" range="-45 45" stiffness="20" type="hinge"/>
+                <joint armature="0.02" axis="0 1 0" damping="5" name="abdomen_y" pos="0 0 0.065" range="-75 30" stiffness="10" type="hinge"/>
+                <body name="pelvis" pos="0 0 -0.165" quat="1.000 0 -0.002 0">
+                    <joint armature="0.02" axis="1 0 0" damping="5" name="abdomen_x" pos="0 0 0.1" range="-35 35" stiffness="10" type="hinge"/>
+                    <geom fromto="-.02 -.07 0 -.02 .07 0" name="butt" size="0.09" type="capsule"/>
+                    <body name="right_thigh" pos="0 -0.1 -0.04">
+                        <joint armature="0.01" axis="1 0 0" damping="5" name="right_hip_x" pos="0 0 0" range="-25 5" stiffness="10" type="hinge"/>
+                        <joint armature="0.01" axis="0 0 1" damping="5" name="right_hip_z" pos="0 0 0" range="-60 35" stiffness="10" type="hinge"/>
+                        <joint armature="0.0080" axis="0 1 0" damping="5" name="right_hip_y" pos="0 0 0" range="-110 20" stiffness="20" type="hinge"/>
+                        <geom fromto="0 0 0 0 0.01 -.34" name="right_thigh1" size="0.06" type="capsule"/>
+                        <body name="right_shin" pos="0 0.01 -0.403">
+                            <joint armature="0.0060" axis="0 -1 0" name="right_knee" pos="0 0 .02" range="-160 -2" type="hinge"/>
+                            <geom fromto="0 0 0 0 0 -.3" name="right_shin1" size="0.049" type="capsule"/>
+                            <body name="right_foot" pos="0 0 -0.45">
+                                <!-- Rectangular foot. The stock sphere (r=0.075, centre
+                                     z=0.1) touches the ground at a single point, so it has
+                                     no support polygon at all — nothing to balance on and
+                                     no edge to stand on. The box keeps the SOLE at the same
+                                     height so leg length and standing pose are unchanged:
+                                     sphere bottom was z = 0.1 - 0.075 = 0.025, and this box
+                                     (half-height 0.025, centre z=0.05) has its underside at
+                                     exactly 0.025 too. Offset +0.04 in x puts the ankle
+                                     between heel (-0.06) and toe (+0.14), x being the
+                                     humanoid's forward axis. -->
+                                <geom name="right_foot" type="box" pos="0.04 0 0.05"
+                                      size="0.10 0.045 0.025" user="0"/>
+                            </body>
+                        </body>
+                    </body>
+                    <body name="left_thigh" pos="0 0.1 -0.04">
+                        <joint armature="0.01" axis="-1 0 0" damping="5" name="left_hip_x" pos="0 0 0" range="-25 5" stiffness="10" type="hinge"/>
+                        <joint armature="0.01" axis="0 0 -1" damping="5" name="left_hip_z" pos="0 0 0" range="-60 35" stiffness="10" type="hinge"/>
+                        <joint armature="0.01" axis="0 1 0" damping="5" name="left_hip_y" pos="0 0 0" range="-110 20" stiffness="20" type="hinge"/>
+                        <geom fromto="0 0 0 0 -0.01 -.34" name="left_thigh1" size="0.06" type="capsule"/>
+                        <body name="left_shin" pos="0 -0.01 -0.403">
+                            <joint armature="0.0060" axis="0 -1 0" name="left_knee" pos="0 0 .02" range="-160 -2" stiffness="1" type="hinge"/>
+                            <geom fromto="0 0 0 0 0 -.3" name="left_shin1" size="0.049" type="capsule"/>
+                            <body name="left_foot" pos="0 0 -0.45">
+                                <geom name="left_foot" type="box" pos="0.04 0 0.05"
+                                      size="0.10 0.045 0.025" user="0"/>
+                            </body>
+                        </body>
+                    </body>
+                </body>
+            </body>
+
+            <!-- ==================== RIGHT ARM + HAND ==================== -->
+            <body name="right_upper_arm" pos="0 -0.17 0.06">
+                <joint armature="0.0068" axis="2 1 1" name="right_shoulder1" pos="0 0 0" range="-85 60" stiffness="1" type="hinge"/>
+                <joint armature="0.0051" axis="0 -1 1" name="right_shoulder2" pos="0 0 0" range="-85 60" stiffness="1" type="hinge"/>
+                <geom fromto="0 0 0 .16 -.16 -.16" name="right_uarm1" size="0.04 0.16" type="capsule"/>
+                <body name="right_lower_arm" pos=".18 -.18 -.18">
+                    <joint armature="0.0028" axis="0 -1 1" name="right_elbow" pos="0 0 0" range="-90 50" stiffness="0" type="hinge"/>
+                    <geom fromto="0.01 0.01 0.01 .17 .17 .17" name="right_larm" size="0.031" type="capsule"/>
+
+                    <!-- Hand frame: quat rotates local +x onto the forearm axis
+                         (1,1,1)/sqrt(3), so fingers point away from the elbow,
+                         local -z is the palm/grip side, local +-y spans the knuckles. -->
+                    <body name="right_hand" pos=".18 .18 .18" quat="0.8881 0 -0.3251 0.3251">
+                        <joint name="right_wrist" type="hinge" axis="0 1 0" pos="0 0 0"
+                               range="-50 50" armature="0.002" damping="0.2" stiffness="1"/>
+                        <!-- Kept the name `right_hand` so existing env lookups of the hand
+                             geom still resolve. Now a frictional palm plate, not a point. -->
+                        <geom name="right_hand" type="box" size="0.021 0.030 0.011" pos="0.041 0 0"
+                              condim="3" friction="1.5 0.05 0.0001"/>
+
+                        <body name="right_f1_prox" pos="0.072 0.026 0">
+                            <joint class="finger" name="right_f1_mcp" axis="0 1 0" range="-20 95"/>
+                            <geom class="finger" name="right_f1_prox" fromto="0 0 0 0.028 0 0"/>
+                            <body name="right_f1_dist" pos="0.030 0 0">
+                                <joint class="finger" name="right_f1_pip" axis="0 1 0" range="0 100"/>
+                                <geom class="finger" name="right_f1_dist" fromto="0 0 0 0.023 0 0" size="0.007"/>
+                            </body>
+                        </body>
+                        <body name="right_f2_prox" pos="0.074 0.009 0">
+                            <joint class="finger" name="right_f2_mcp" axis="0 1 0" range="-20 95"/>
+                            <geom class="finger" name="right_f2_prox" fromto="0 0 0 0.031 0 0"/>
+                            <body name="right_f2_dist" pos="0.033 0 0">
+                                <joint class="finger" name="right_f2_pip" axis="0 1 0" range="0 100"/>
+                                <geom class="finger" name="right_f2_dist" fromto="0 0 0 0.025 0 0" size="0.007"/>
+                            </body>
+                        </body>
+                        <body name="right_f3_prox" pos="0.073 -0.009 0">
+                            <joint class="finger" name="right_f3_mcp" axis="0 1 0" range="-20 95"/>
+                            <geom class="finger" name="right_f3_prox" fromto="0 0 0 0.029 0 0"/>
+                            <body name="right_f3_dist" pos="0.031 0 0">
+                                <joint class="finger" name="right_f3_pip" axis="0 1 0" range="0 100"/>
+                                <geom class="finger" name="right_f3_dist" fromto="0 0 0 0.023 0 0" size="0.007"/>
+                            </body>
+                        </body>
+                        <body name="right_f4_prox" pos="0.070 -0.026 0">
+                            <joint class="finger" name="right_f4_mcp" axis="0 1 0" range="-20 95"/>
+                            <geom class="finger" name="right_f4_prox" fromto="0 0 0 0.024 0 0" size="0.007"/>
+                            <body name="right_f4_dist" pos="0.026 0 0">
+                                <joint class="finger" name="right_f4_pip" axis="0 1 0" range="0 100"/>
+                                <geom class="finger" name="right_f4_dist" fromto="0 0 0 0.019 0 0" size="0.006"/>
+                            </body>
+                        </body>
+                        <!-- Thumb: TRUE opposition. The four fingers curl about (0,1,0),
+                             so a thumb sharing that axis just curls beside them and can
+                             never pinch. Instead its three joints share one oblique hinge
+                             solved from the geometry: with the thumb resting along
+                             d = (0.881, 0.464, -0.093) and the closed fingertips clustered
+                             at ~(0.057, 0, -0.025) (direction t from the thumb base), the
+                             axis that carries d onto t is
+                                 hinge = normalize(d x t) = (-0.302, 0.401, -0.865).
+                             Rotating about it sweeps the thumb across and under the palm
+                             into the fingertips, ~66 deg of travel to contact. Three
+                             phalanges (meta/prox/dist) share the axis so the curl is
+                             smooth and the tip can overshoot into a firm pinch. -->
+                        <!-- Base is OUTSIDE the palm box (palm +y face is at 0.030; the
+                             0.0095-radius metacarpal sits at y=0.042 so its surface clears
+                             by 2.5 mm) and PROXIMAL at x=0.012, where a real CMC joint is —
+                             which also buys reach: |base->fingertips| = 59 mm.
+                             Rest direction d = (0.860, 0.500, -0.100); closed fingertips
+                             cluster at (0.057, 0.009, -0.026); the axis carrying d onto
+                             that cluster is hinge = normalize(d x t) = (-0.244, 0.231,
+                             -0.942), needing 66 deg of flexion. Segment lengths sum to
+                             |base->cluster| minus both tip radii, so the thumb pad meets
+                             the finger pads instead of driving through them — and the
+                             `thumb` collision class makes that contact real. -->
+                        <!-- Base is clear of the palm on BOTH axes: beside it in y (palm
+                             +y face 0.030, thumb at 0.038) and BELOW it in z (palm bottom
+                             -0.011, thumb at -0.024). The z offset is the important one —
+                             at z=-0.006 the thumb's whole sweep happened inside the palm
+                             plate and drove 6 mm into it. Down here it sweeps under the
+                             palm, through the same plane the closed fingertips occupy
+                             (z=-0.026).
+                             Rest d = (0.864, 0.503, 0); closed fingertip cluster at
+                             (0.057, 0.009, -0.026) => hinge = normalize(d x t) =
+                             (-0.018, 0.031, -0.999), essentially -z: the thumb sweeps a
+                             horizontal arc under the palm. 63 deg of flexion to contact.
+                             TWO links, not three — 15/13/10 mm segments with 8-9 mm radii
+                             read as a blob of spheres; two longer links read as a thumb. -->
+                        <!-- A closing fist tucks its FINGERTIPS under the palm (measured:
+                             x drops 0.070 -> 0.057, z -0.014 -> -0.026), so aiming the
+                             thumb at the tips forced it to burrow under the hand. A real
+                             thumb wraps OVER the front face of the fist, which is the
+                             PROXIMAL segments at x~0.070, z~-0.014. That's the target here:
+                             T = (0.072, 0.006, -0.016), approached from the +y side.
+                             Base sits on the palm's +y edge and deliberately merges into
+                             the palm corner — that's the thenar eminence, and th_meta's
+                             parent IS the palm body, so MuJoCo excludes the pair; no
+                             contact is generated and it reads as a thumb growing out of
+                             the hand rather than a spur bolted underneath it.
+                             Rest d = (0.800, 0.580, -0.150) => hinge = normalize(d x t) =
+                             (-0.113, -0.099, -0.989), 69.5 deg of flexion to wrap. -->
+                        <!-- Thumb closes onto the index finger's OUTER face (a pinch), not
+                             across the midline of a clenched fist. That's a geometric
+                             necessity, not a shortcut: the fingers curl to 100 deg and tuck
+                             their tips under a 42 mm palm, so wrapping in front of the fist
+                             and reaching the midline needs a ~91 mm thumb against 51 mm
+                             fingers. A pinch is also the useful pose for gripping a hold.
+                             Base y=0.040 keeps the whole thumb OUTBOARD of the palm
+                             (+y face 0.030, thumb inner surface 0.0308) and outboard of
+                             the index finger (y=0.026) through the entire sweep, so
+                             nothing interpenetrates rather than relying on contact to
+                             break a fight it loses (a 10 g phalanx vs a gear-6 tendon).
+                             Rest d=(0.8,0.6,0) -> closed t=(1,0,0): hinge is pure -z and
+                             the sweep is 37 deg of pure adduction toward the fingers. -->
+                        <body name="right_th_meta" pos="0.030 0.040 -0.014">
+                            <!-- OPPOSITION, the second CMC axis. Both other thumb joints
+                                 share (0,0,-1), which trapped the thumb in the palm plane —
+                                 it could sweep ACROSS the fingers but never rotate DOWN
+                                 toward them, which is why it could only pinch the index
+                                 finger's side. This axis is d x z = (0.6,-0.8,0), i.e.
+                                 perpendicular to both the thumb's long axis d=(0.8,0.6,0)
+                                 and the palm normal, so d is perpendicular to it and
+                                 rotating sweeps d cleanly out of plane:
+                                     d(theta) = (0.8cos, 0.6cos, sin).
+                                 Negative angles drop the thumb toward -z, the grip side the
+                                 fingers curl into; +y stays positive throughout, so the
+                                 thumb never swings back into the palm (y face at 0.030). -->
+                            <joint class="thumb" name="right_thumb_opp" axis="0.6 -0.8 0" range="-50 10"/>
+                            <joint class="thumb" name="right_thumb_cmc" axis="0 0 -1" range="-10 28"/>
+                            <geom class="thumb" name="right_th_meta" fromto="0 0 0 0.02088 0.01566 0" size="0.0092"/>
+                            <body name="right_th_dist" pos="0.02088 0.01566 0">
+                                <joint class="thumb" name="right_thumb_ip" axis="0 0 -1" range="0 14"/>
+                                <geom class="thumb" name="right_th_dist" fromto="0 0 0 0.01712 0.01284 0" size="0.008"/>
+                            </body>
+                        </body>
+                    </body>
+                </body>
+            </body>
+
+            <!-- ==================== LEFT ARM + HAND ==================== -->
+            <body name="left_upper_arm" pos="0 0.17 0.06">
+                <joint armature="0.0068" axis="2 -1 1" name="left_shoulder1" pos="0 0 0" range="-60 85" stiffness="1" type="hinge"/>
+                <joint armature="0.0051" axis="0 1 1" name="left_shoulder2" pos="0 0 0" range="-60 85" stiffness="1" type="hinge"/>
+                <geom fromto="0 0 0 .16 .16 -.16" name="left_uarm1" size="0.04 0.16" type="capsule"/>
+                <body name="left_lower_arm" pos=".18 .18 -.18">
+                    <joint armature="0.0028" axis="0 -1 -1" name="left_elbow" pos="0 0 0" range="-90 50" stiffness="0" type="hinge"/>
+                    <geom fromto="0.01 -0.01 0.01 .17 -.17 .17" name="left_larm" size="0.031" type="capsule"/>
+
+                    <!-- Mirrored: local +x onto the forearm axis (1,-1,1)/sqrt(3). -->
+                    <body name="left_hand" pos=".18 -.18 .18" quat="0.8881 0 -0.3251 -0.3251">
+                        <joint name="left_wrist" type="hinge" axis="0 1 0" pos="0 0 0"
+                               range="-50 50" armature="0.002" damping="0.2" stiffness="1"/>
+                        <geom name="left_hand" type="box" size="0.021 0.030 0.011" pos="0.041 0 0"
+                              condim="3" friction="1.5 0.05 0.0001"/>
+
+                        <body name="left_f1_prox" pos="0.072 -0.026 0">
+                            <joint class="finger" name="left_f1_mcp" axis="0 1 0" range="-20 95"/>
+                            <geom class="finger" name="left_f1_prox" fromto="0 0 0 0.028 0 0"/>
+                            <body name="left_f1_dist" pos="0.030 0 0">
+                                <joint class="finger" name="left_f1_pip" axis="0 1 0" range="0 100"/>
+                                <geom class="finger" name="left_f1_dist" fromto="0 0 0 0.023 0 0" size="0.007"/>
+                            </body>
+                        </body>
+                        <body name="left_f2_prox" pos="0.074 -0.009 0">
+                            <joint class="finger" name="left_f2_mcp" axis="0 1 0" range="-20 95"/>
+                            <geom class="finger" name="left_f2_prox" fromto="0 0 0 0.031 0 0"/>
+                            <body name="left_f2_dist" pos="0.033 0 0">
+                                <joint class="finger" name="left_f2_pip" axis="0 1 0" range="0 100"/>
+                                <geom class="finger" name="left_f2_dist" fromto="0 0 0 0.025 0 0" size="0.007"/>
+                            </body>
+                        </body>
+                        <body name="left_f3_prox" pos="0.073 0.009 0">
+                            <joint class="finger" name="left_f3_mcp" axis="0 1 0" range="-20 95"/>
+                            <geom class="finger" name="left_f3_prox" fromto="0 0 0 0.029 0 0"/>
+                            <body name="left_f3_dist" pos="0.031 0 0">
+                                <joint class="finger" name="left_f3_pip" axis="0 1 0" range="0 100"/>
+                                <geom class="finger" name="left_f3_dist" fromto="0 0 0 0.023 0 0" size="0.007"/>
+                            </body>
+                        </body>
+                        <body name="left_f4_prox" pos="0.070 0.026 0">
+                            <joint class="finger" name="left_f4_mcp" axis="0 1 0" range="-20 95"/>
+                            <geom class="finger" name="left_f4_prox" fromto="0 0 0 0.024 0 0" size="0.007"/>
+                            <body name="left_f4_dist" pos="0.026 0 0">
+                                <joint class="finger" name="left_f4_pip" axis="0 1 0" range="0 100"/>
+                                <geom class="finger" name="left_f4_dist" fromto="0 0 0 0.019 0 0" size="0.006"/>
+                            </body>
+                        </body>
+                        <!-- Mirror of the right thumb through the y=0 plane. Positions and
+                             directions mirror as (x,y,z)->(x,-y,z); the hinge is a
+                             PSEUDOvector, so it mirrors as (a,b,c)->(-a,b,-c), giving
+                             (0.302, 0.401, 0.865). Because the axis carries the sign flip,
+                             the joint ranges stay identical to the right hand. -->
+                        <body name="left_th_meta" pos="0.030 -0.040 -0.014">
+                            <!-- Mirrored opposition axis: pseudovector, (a,b,c)->(-a,b,-c). -->
+                            <joint class="thumb" name="left_thumb_opp" axis="-0.6 -0.8 0" range="-50 10"/>
+                            <joint class="thumb" name="left_thumb_cmc" axis="0 0 1" range="-10 28"/>
+                            <geom class="thumb" name="left_th_meta" fromto="0 0 0 0.02088 -0.01566 0" size="0.0092"/>
+                            <body name="left_th_dist" pos="0.02088 -0.01566 0">
+                                <joint class="thumb" name="left_thumb_ip" axis="0 0 1" range="0 14"/>
+                                <geom class="thumb" name="left_th_dist" fromto="0 0 0 0.01712 -0.01284 0" size="0.008"/>
+                            </body>
+                        </body>
+                    </body>
+                </body>
+            </body>
+        </body>
+    </worldbody>
+
+    <tendon>
+        <fixed name="left_hipknee">
+            <joint coef="-1" joint="left_hip_y"/>
+            <joint coef="1" joint="left_knee"/>
+        </fixed>
+        <fixed name="right_hipknee">
+            <joint coef="-1" joint="right_hip_y"/>
+            <joint coef="1" joint="right_knee"/>
+        </fixed>
+
+        <!-- One tendon per hand couples all eight finger joints: a single positive
+             ctrl closes the whole hand, like a tendon-driven gripper. -->
+        <fixed name="right_grip">
+            <joint coef="1" joint="right_f1_mcp"/>
+            <joint coef="1" joint="right_f1_pip"/>
+            <joint coef="1" joint="right_f2_mcp"/>
+            <joint coef="1" joint="right_f2_pip"/>
+            <joint coef="1" joint="right_f3_mcp"/>
+            <joint coef="1" joint="right_f3_pip"/>
+            <joint coef="1" joint="right_f4_mcp"/>
+            <joint coef="1" joint="right_f4_pip"/>
+        </fixed>
+        <!-- All three thumb joints share one oblique hinge, so a single positive ctrl
+             drives the whole opposition sweep. Coefs are +1 on BOTH hands: the
+             mirroring lives in the axis sign, not the tendon. -->
+        <fixed name="right_thumb">
+            <joint coef="1" joint="right_thumb_cmc"/>
+            <joint coef="1" joint="right_thumb_ip"/>
+        </fixed>
+        <fixed name="left_grip">
+            <joint coef="1" joint="left_f1_mcp"/>
+            <joint coef="1" joint="left_f1_pip"/>
+            <joint coef="1" joint="left_f2_mcp"/>
+            <joint coef="1" joint="left_f2_pip"/>
+            <joint coef="1" joint="left_f3_mcp"/>
+            <joint coef="1" joint="left_f3_pip"/>
+            <joint coef="1" joint="left_f4_mcp"/>
+            <joint coef="1" joint="left_f4_pip"/>
+        </fixed>
+        <fixed name="left_thumb">
+            <joint coef="1" joint="left_thumb_cmc"/>
+            <joint coef="1" joint="left_thumb_ip"/>
+        </fixed>
+    </tendon>
+
+    <actuator>
+        <!-- == indices 0..16: IDENTICAL to humanoid.xml, same order == -->
+        <motor gear="100" joint="abdomen_y" name="abdomen_y"/>
+        <motor gear="100" joint="abdomen_z" name="abdomen_z"/>
+        <motor gear="100" joint="abdomen_x" name="abdomen_x"/>
+        <motor gear="100" joint="right_hip_x" name="right_hip_x"/>
+        <motor gear="100" joint="right_hip_z" name="right_hip_z"/>
+        <motor gear="300" joint="right_hip_y" name="right_hip_y"/>
+        <motor gear="200" joint="right_knee" name="right_knee"/>
+        <motor gear="100" joint="left_hip_x" name="left_hip_x"/>
+        <motor gear="100" joint="left_hip_z" name="left_hip_z"/>
+        <motor gear="300" joint="left_hip_y" name="left_hip_y"/>
+        <motor gear="200" joint="left_knee" name="left_knee"/>
+        <!-- Arm gears raised 25 -> 200 to match humanoid.xml; see the note there.
+             Stock gym values are walking-tuned and cap each arm joint at 10 N*m,
+             far below the ~64 N*m per arm a two-arm pull-up demands. -->
+        <motor gear="200" joint="right_shoulder1" name="right_shoulder1"/>
+        <motor gear="200" joint="right_shoulder2" name="right_shoulder2"/>
+        <motor gear="200" joint="right_elbow" name="right_elbow"/>
+        <motor gear="200" joint="left_shoulder1" name="left_shoulder1"/>
+        <motor gear="200" joint="left_shoulder2" name="left_shoulder2"/>
+        <motor gear="200" joint="left_elbow" name="left_elbow"/>
+        <!-- == indices 17..22: the new hand DOFs == -->
+        <motor gear="8"  joint="right_wrist"  name="right_wrist"/>
+        <motor gear="12" tendon="right_grip"  name="right_grip"/>
+        <motor gear="6"  tendon="right_thumb" name="right_thumb"/>
+        <motor gear="8"  joint="left_wrist"   name="left_wrist"/>
+        <motor gear="12" tendon="left_grip"   name="left_grip"/>
+        <motor gear="6"  tendon="left_thumb"  name="left_thumb"/>
+        <!-- == indices 23..24: thumb opposition, appended so 0..22 keep their
+             meaning for anything already trained against the 23-action layout == -->
+        <motor gear="5"  joint="right_thumb_opp" name="right_thumb_opp"/>
+        <motor gear="5"  joint="left_thumb_opp"  name="left_thumb_opp"/>
+    </actuator>
+</mujoco>
